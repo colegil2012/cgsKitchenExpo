@@ -1,0 +1,9 @@
+node_modules
+dist
+.env
+*.log
+
+.idea
+*.iws
+*.iml
+*.ipr
