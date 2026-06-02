@@ -4,6 +4,7 @@ import {storeToRefs} from 'pinia';
 import {useBoardStore} from './stores/board';
 import {BOARD_COLUMNS} from './types/order';
 import BoardColumn from './components/BoardColumn.vue';
+import logoUrl from './assets/header_logo.png';
 
 const store = useBoardStore();
 const {byColumn, online} = storeToRefs(store);
@@ -38,10 +39,13 @@ onUnmounted(() => {
 <template>
   <div class="board">
     <header class="board__bar">
-      <h1 class="board__brand">CGS&nbsp;<span>Kitchen</span></h1>
+      <div class="board__brand">
+        <img :src="logoUrl" class="board__brand-logo" alt="Logo" />
+        <h1 class="board__brand-title">EXPO</h1>
+      </div>
       <div class="board__status">
         <span class="dot" :class="online ? 'dot--ok' : 'dot--down'" />
-        <span class="board__net">{{ online ? 'Live' : 'Reconnecting' }}</span>
+        <span class="board__net">{{ online ? 'Online' : 'Reconnecting' }}</span>
         <span class="board__clock">{{ clock }}</span>
       </div>
     </header>
@@ -80,15 +84,21 @@ onUnmounted(() => {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 .board__brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.board__brand-logo {
+  height: 2.3rem;
+  width: auto;
+}
+.board__brand-title {
+  color: var(--accent-brand);
   font-family: var(--font-display);
   font-size: 1.7rem;
   font-weight: 800;
   letter-spacing: 0.06em;
-  color: var(--ink);
   margin: 0;
-}
-.board__brand span {
-  color: var(--accent-brand);
 }
 .board__status {
   display: flex;
