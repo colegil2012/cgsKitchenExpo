@@ -24,7 +24,7 @@ case "$ROLE" in
     *)    echo "ERROR: role must be 'expo' or 'menu' (got '$ROLE')."; exit 1 ;;
 esac
 
-exec chromium \
+exec /usr/lib/chromium/chromium \
   --kiosk \
   --noerrdialogs \
   --disable-infobars \
