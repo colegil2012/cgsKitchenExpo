@@ -19,8 +19,8 @@ if [ -z "$ROLE" ] && [ -f /etc/celtech/role ]; then
 fi
 
 case "$ROLE" in
-    expo) APP_NAME="celtech-expo" ;;
-    menu) APP_NAME="celtech-menu" ;;
+    expo) APP_NAME="cgsKitchenExpo" ;;
+    menu) APP_NAME="cgsKitchenMenu" ;;
     *)    echo "ERROR: role must be 'expo' or 'menu' (got '$ROLE')."; exit 1 ;;
 esac
 
@@ -36,4 +36,4 @@ exec chromium \
   --force-device-scale-factor=1 \
   --disable-session-crashed-bubble \
   --disable-popup-blocking \
-  --app=file:///home/druid-display/$APP_NAME/dist/index.html
+  --app=file:///home/druid/$APP_NAME/dist/index.html

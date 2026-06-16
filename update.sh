@@ -28,13 +28,13 @@ if [ -z "$ROLE" ] && [ -f /etc/celtech/role ]; then
 fi
 
 case "$ROLE" in
-    expo) APP_NAME="celtech-expo"; APP_LABEL="Expo Board" ;;
-    menu) APP_NAME="celtech-menu"; APP_LABEL="Menu Board" ;;
+    expo) APP_NAME="cgsKitchenExpo"; APP_LABEL="Expo Board" ;;
+    menu) APP_NAME="cgsKitchenMenu"; APP_LABEL="Menu Board" ;;
     *)    echo "ERROR: role must be 'expo' or 'menu' (got '$ROLE'). Pass as arg or set /etc/celtech/role."; exit 1 ;;
 esac
 
-APP_DIR="/home/druid-mobile/$APP_NAME"
-LOG_FILE="/home/druid-mobile/update.log"
+APP_DIR="/home/druid/$APP_NAME"
+LOG_FILE="/home/druid/update.log"
 ENV_FILE="/etc/celtech/env"
 ENV_OUT="$APP_DIR/.env"
 BRANCH="main"
