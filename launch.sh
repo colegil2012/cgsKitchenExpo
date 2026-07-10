@@ -24,16 +24,16 @@ case "$ROLE" in
     *)    echo "ERROR: role must be 'expo' or 'menu' (got '$ROLE')."; exit 1 ;;
 esac
 
+case "$ROLE" in
+    expo) PORT=6174 ;;
+    menu) PORT=6175 ;;
+    *)    echo "ERROR: role must be 'expo' or 'menu'."; exit 1 ;;
+esac
+
 exec /usr/lib/chromium/chromium \
-  --kiosk \
-  --noerrdialogs \
-  --disable-infobars \
-  --no-first-run \
-  --ozone-platform=wayland \
-  --password-store=basic \
-  --allow-file-access-from-files \
+  --kiosk --noerrdialogs --disable-infobars --no-first-run \
+  --ozone-platform=wayland --password-store=basic \
   --enable-features=UseOzonePlatform \
   --force-device-scale-factor=1 \
-  --disable-session-crashed-bubble \
-  --disable-popup-blocking \
-  --app=file:///home/druid/$APP_NAME/dist/index.html
+  --disable-session-crashed-bubble --disable-popup-blocking \
+  --app=http://localhost:$PORT
