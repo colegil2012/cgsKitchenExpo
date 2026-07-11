@@ -32,10 +32,12 @@ esac
 
 exec /usr/lib/chromium/chromium \
   --kiosk --noerrdialogs --disable-infobars --no-first-run \
+  --disable-dev-shm-usage --disable-features=site-per-process \
+  --renderer-process-limit=1 --js-flags="--max-old-space-size=64" \
   --ozone-platform=wayland --password-store=basic \
   --enable-features=UseOzonePlatform \
   --force-device-scale-factor=1 \
   --disable-session-crashed-bubble --disable-popup-blocking \
-  --disable-gpu \
+  --use-gl=egl
   --remote-debugging-port=9222 \
   --app=http://localhost:$PORT
