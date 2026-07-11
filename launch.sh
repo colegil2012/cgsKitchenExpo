@@ -37,5 +37,5 @@ exec /usr/lib/chromium/chromium \
   --force-device-scale-factor=1 \
   --disable-session-crashed-bubble --disable-popup-blocking \
   --disable-gpu \
-  --use-gl=swiftshader \
+  --remote-debugging-port=9222 \
   --app=http://localhost:$PORT
