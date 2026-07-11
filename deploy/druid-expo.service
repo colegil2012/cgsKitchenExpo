@@ -1,0 +1,27 @@
+# /etc/systemd/system/cgs-expo.service
+#
+# The Expo board, drawn straight to the framebuffer (KMS/DRM).
+# NO labwc, NO Wayland compositor, NO browser. Just Python + SDL2.
+#
+# Runs on the console TTY. The user must be in the 'video' and 'render'
+# groups to open /dev/dri/card* directly.
+
+[Unit]
+Description=CGS Kitchen Expo Board (native)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=druid
+Group=druid
+SupplementaryGroups=video render input
+WorkingDirectory=/home/druid/cgsKitchenExpo
+Environment=SDL_VIDEODRIVER=kmsdrm
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/druid/cgsKitchenExpo/.venv/bin/python /home/druid/cgsKitchenExpo/main.py expo
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

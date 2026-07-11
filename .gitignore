@@ -1,9 +1,4 @@
-node_modules
-dist
-.env
-*.log
-
-.idea
-*.iws
-*.iml
-*.ipr
+.venv/
+__pycache__/
+*.pyc
+update.log
