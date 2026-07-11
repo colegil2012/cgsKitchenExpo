@@ -36,4 +36,5 @@ exec /usr/lib/chromium/chromium \
   --enable-features=UseOzonePlatform \
   --force-device-scale-factor=1 \
   --disable-session-crashed-bubble --disable-popup-blocking \
+  --disable-gpu \
   --app=http://localhost:$PORT
