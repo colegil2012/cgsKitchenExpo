@@ -1,165 +1,184 @@
-# CGS Kitchen Expo Board — Vue display for cgsKitchen
+# cgsKitchenExpo
 
-Standalone kitchen order board for the food truck, built as a static web app
-that runs in the **same Chromium-kiosk-on-a-Pi** pattern as the driver unit
-and the POS. It is a **read-only** expo display: a wall-mounted TV showing
-in-flight orders moving Paid -> In Kitchen -> Ready. It does not ring up,
-advance, or cancel anything — the POS owns every transition. Built for a
-**Pi Zero 2 W** driving an HDMI screen.
+Kitchen order board for the CGS Kitchen food truck. Runs on a **Raspberry Pi Zero 2 W** wired to an HDMI TV, and shows live orders as they move `PAID → IN_KITCHEN → READY`.
 
-## Why this architecture
+It is a read-only display. It never writes to the backend — the POS drives all state changes; this board just reflects them.
 
-The driver kiosk and the POS already run Chromium fullscreen on labwc, loading
-a local web app. This board reuses that exact stack — another Pi provisioned
-the same way, only the launched URL differs. No new device class, one
-provisioning playbook. The board is **standalone**: it only consumes cgsKitchen
-endpoints, holds no local state worth persisting, and writes nothing back. New
-data needs become new endpoints in cgsKitchen, not coupling into this app.
+---
 
-It is deliberately **read-only**. The POS (and its kitchen tab) is the single
-writer of order status; a second device that could also advance orders would
-be shared mutable state where a stale, late tap is wrong. This display just
-mirrors `GET /api/orders/active` and lets the line cooks see the queue at a
-glance. If a write surface is ever wanted here, it becomes a new device role,
-not a quiet capability bolted onto a wall TV.
+## Architecture
 
-## Authentication
+**Python + Pillow, drawing straight to the Linux framebuffer (`/dev/fb0`).**
 
-Every request sends the `X-API-Key` header (set from `VITE_API_KEY`, which must
-match the backend `app.api-key`). The only exception is the health probe, which
-is unauthenticated. The orders read lives on the backend's API-key filter chain
-(`/api/**`), same as the POS — there is no public, keyless endpoint. Vite
-inlines `VITE_*` vars at build time, so changing `.env` requires a rebuild, not
-just a refresh.
+No browser. No compositor. No GPU. No Node.
 
-## What it talks to
+```
+cgsKitchen (Spring, DigitalOcean)
+        │  GET /api/orders/active   [X-API-Key]
+        ▼
+   ApiPoller (background thread)
+        │  OrderView[]
+        ▼
+   ExpoBoard.render()  →  PIL.Image
+        │
+        ▼
+   Framebuffer.show()  →  mmap → /dev/fb0  →  TV
+```
 
-All endpoints are on the cgsKitchen backend. "On drop" describes what happens
-on a connectivity loss.
+### Why not a browser?
 
-| Action | Endpoint | On drop |
+This board was originally a Vue app in Chromium, matching the POS. **On a 512MB Zero 2 W that does not work.** Chromium could not get a GPU context (`EGL_BAD_ATTRIBUTE`), fell back to software rendering, and then ate the board alive: 84MB RAM free, swap 77% consumed, the renderer at 143% CPU and the network process pegged at 102% — which wedged its own network layer and left the screen blank.
+
+### Why not SDL/pygame?
+
+Tried second, also dead. The VideoCore IV cannot give SDL an EGL context either (`pygame.error: EGL not initialized`), and Pi OS's SDL ships no `fbcon`/`directfb` fallback — probing every backend leaves only `offscreen`, which renders to memory and displays nothing.
+
+### Why the framebuffer works
+
+We `mmap` the kernel's framebuffer and write bytes into it; the display controller scans them out. **No GPU is involved at any point**, so there is no context to fail to acquire. It is the oldest and dumbest way to put pixels on a screen, and for a text board it is exactly right.
+
+---
+
+## Layout
+
+```
+main.py             entry point: poll loop + framebuffer blit
+expo_board.py       the renderer (columns, tickets, aging heat)
+preview.py          dev tool — render to PNG instead of the framebuffer
+common/
+  config.py         reads /etc/celtech/env at RUNTIME
+  api.py            background poller, last-known-good on drop
+  framebuffer.py    mmap /dev/fb0, RGB565/BGRA packing, rotation
+fonts/              vendored TTFs (Archivo, Space Mono) — committed on purpose
+deploy/
+  cgs-expo.service  systemd unit
+requirements.txt    Pillow + numpy. That's it.
+update.sh           git pull + systemctl restart
+```
+
+---
+
+## Configuration
+
+All config lives in **`/etc/celtech/env`** on the device and is read **at runtime** — change it and restart the service; there is no build step.
+
+```ini
+API_BASE_URL=https://celtechgs.kitchen
+API_KEY=<the backend's API key>
+
+# optional
+POLL_SECONDS=10      # default 10 for expo
+ROTATE=0             # 0 | 90 | 180 | 270 — for a TV turned on its side
+```
+
+`/etc/celtech/role` contains `expo`.
+
+> **Runtime config is the quiet win.** The old Vue build inlined `VITE_*` at *build* time, so changing a key meant `npm ci && npm run build` **on the Pi** — a 50-second, memory-guarded ordeal that needed a 1GB swapfile. Now it's `systemctl restart`.
+
+---
+
+## What it renders
+
+Three columns, oldest-first within each: **Paid**, **In Kitchen**, **Ready**.
+
+Each ticket shows the last 4 of the order id, an age timer, item lines (`2x Shepherd's Fries`), modifiers indented beneath, and the fulfillment type.
+
+**Aging heat** (ported from the original `OrderTicket.vue`):
+
+| Age | State | Treatment |
 |---|---|---|
-| Active kitchen orders | `GET /api/orders/active` | last-known board stays up; polls when online |
-| Health probe | `GET /actuator/health` | — (this *is* the connectivity check) |
+| < 6 min | fresh | column accent bar |
+| ≥ 6 min | warm | amber bar |
+| ≥ 12 min | hot | red bar + pulsing ring |
+| any, in READY | cool | always calm — it's done |
 
-No new server endpoints are required; both are already what the POS calls.
+**Modifiers** are normalized from three shapes, in order: the structured array (`[{label, priceDeltaCents}]`), a legacy comma-delimited string, or a parenthetical in the item name (`Boxty (Bacon, Cheddar)`) — so old flattened tickets still render.
 
-## Features
+**Connectivity**: a green `LIVE` dot, or red `RECONNECTING`. On a network drop the board **keeps the last known orders on screen** rather than blanking — a blank board in a kitchen is worse than a stale one.
 
-### The board
-Three columns — **Paid -> In Kitchen -> Ready** — backed by
-`GET /api/orders/active`, polled every 10s. Orders are grouped by `status` and
-sorted oldest-first within each column, so the first ticket paid is the first
-ticket worked. When the server stops returning an order (advanced to a terminal
-state, or cancelled from the POS) it simply drops off the board on the next
-poll. Terminal states never appear here because `/active` excludes them.
+---
 
-### Ticket aging
-Each ticket shows a short order number (last 4 of the order id), its line
-items, and a live age timer driven by a single shared clock. Tickets in Paid
-and In Kitchen warm to amber at 6 minutes and pulse red at 12 minutes, a
-passive alarm so nothing sits forgotten. Ready tickets stay cool — once it's
-up, age no longer matters.
+## Running
 
-### Connectivity behaviour
-A header status dot shows Live (green) or Reconnecting (red, blinking). On a
-drop the board keeps the last good data on screen rather than blanking the
-kitchen, and silently resumes when the next poll succeeds.
-
-## Why read-only (no transitions here)
-
-The POS README spells out the rule: status changes are shared mutable state
-where a stale, late-replayed action would be wrong, so they are online-only and
-single-writer. This board honours that by simply not having a write path. The
-backend transition matrix remains the source of truth; the only thing that
-advances an order is the POS hitting `POST /api/orders/{id}/status`. The board
-finds out on its next 10s poll.
-
-## Project layout
-
-```
-src/
-  api/client.ts            fetch wrapper (X-API-Key) + fetchActiveOrders + heartbeat
-  lib/config.ts            Vite env config + HEARTBEAT_PATH + POLL_MS
-  types/order.ts           OrderView contract + BoardColumn helpers
-  stores/board.ts          polls active orders, groups by column, status dot
-  components/BoardColumn.vue   one column header + its ticket stack
-  components/OrderTicket.vue   a ticket: number, items, age, heat state
-  App.vue                  board shell: top bar (brand/clock/status) + 3 columns
-  main.ts                  entry
-  styles.css               theme tokens + global kiosk styles (cursor: none)
-```
-
-## Develop
+### On the Pi
 
 ```bash
-npm install
-cp .env.example .env       # set VITE_API_BASE_URL, VITE_API_KEY
-npm run dev                # http://localhost:5173
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python main.py expo
 ```
 
-`VITE_API_KEY` must match the backend `app.api-key`. For local backend dev,
-set `API_KEY` and add `http://localhost:5173` to `CORS_ORIGINS` in the
-cgsKitchen run config. `npm run build` typechecks (vue-tsc) then emits `dist/`.
+It prints the panel geometry before drawing — that line is your proof it found the framebuffer:
 
-### Environment variables
+```
+framebuffer: 1366x768 @ 16bpp (stride 2732) rotate=0 canvas=1366x768
+```
 
-- `VITE_API_BASE_URL` — backend base, e.g. `http://192.168.1.50:8080`
-- `VITE_API_KEY` — must match backend `app.api-key`
-- `VITE_POLL_MS` — board refresh interval (default 10000)
-
-## Deploy to the Pi kiosk
-
-The build output is plain static files with **relative** asset paths
-(`base: './'`), so it loads via `file://` exactly like the driver dashboard
-and the POS. Two options:
-
-**A. Mirror the driver unit (recommended).** Provision a Pi Zero 2 W with the
-same buildout doc (labwc + systemd autologin + `update.sh` git pull). Build and
-commit `dist/`, or have `update.sh` run `npm ci && npm run build` after the
-pull. Point `launch.sh` at the built file:
+Then install the service:
 
 ```bash
-exec chromium \
-  --kiosk --noerrdialogs --disable-infobars --no-first-run \
-  --ozone-platform=wayland --password-store=basic \
-  --enable-features=UseOzonePlatform \
-  --app=file:///home/druid-mobile/celtech-kitchen-board/dist/index.html
+sudo cp deploy/cgs-expo.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cgs-expo.service
 ```
 
-**B. Serve from the network** and point `--app=` at the URL instead. Simpler
-rebuilds, but then the kiosk needs connectivity to load the shell.
+The user must be in the **`video`** group (that's who owns `/dev/fb0`):
 
-Notes for the Zero 2 W: Chromium is heavy on this board, but the app ships tiny
-(~29 KB gzipped JS, no images) and only polls on a timer, so it idles
-comfortably. `cursor: none` is set so no pointer shows on the wall TV. There is
-no touch input — this is display-only.
+```bash
+sudo usermod -aG video druid && sudo reboot
+```
 
-## Offline-readiness checklist (do before relying on it cold)
+### On a dev laptop
 
-1. **Self-host fonts.** `styles.css` pulls Archivo and Space Mono from Google
-   Fonts, which needs network on first paint. Vendor the woff2 files and swap
-   for a local `@font-face`. System-ui fallbacks already prevent a hard fail.
-2. **API reachable on the LAN IP.** Keep `VITE_API_BASE_URL` pointed at the
-   backend's LAN IP if serving the shell over the network. Option A (file://)
-   makes the shell itself network-independent; only the data polls need the LAN.
+`main.py` **will not run** on a desktop machine — the compositor owns `/dev/fb0` and you'll get `PermissionError`. That's correct, not a bug. Use `preview.py`, which runs the *same* renderer and writes a PNG:
 
-## Production hardening notes
+```bash
+./preview.py expo --demo --show      # fake data, no backend needed
+./preview.py expo --show             # live, against /etc/celtech/env
+./preview.py expo --watch            # re-render every few seconds
+./preview.py expo --size 1366x768    # match the Pi's panel exactly
+```
 
-- The API key ships in the built bundle. Fine for one trusted kiosk on a
-  private network; revisit (per-device key / backend proxy) before any broader
-  rollout. Same posture as the POS.
-- Read-only by construction, so there is no last-write-wins concern here — the
-  board can never clobber another device's change because it makes none.
+What you see in the PNG is pixel-for-pixel what the TV shows.
 
-## Roadmap
+---
 
-- **Push instead of poll.** If cgsKitchen grows an SSE/WebSocket order stream,
-  swap the 10s poll for a subscription so the board updates the instant the POS
-  advances a ticket.
-- **Bump-bar / KDS input (separate role).** If line cooks should advance orders
-  from here, that is a new device role with its own write path and the same
-  online-only transition rules as the POS — not a capability added to this
-  display.
-- **Self-hosted fonts** for full cold-start independence (see checklist).
-- **Branding.** Logo on the top bar, favicon.
+## Updating
+
+```bash
+./update.sh expo
+```
+
+Fetches `main`, resets to it, and restarts the service. **No npm, no build, no swap** — the whole thing takes a couple of seconds.
+
+---
+
+## Gotchas
+
+**Seeing "Hello from the pygame community"?** You're running old code. The framebuffer version imports no pygame at all. Check `grep -c pygame main.py` (must be `0`) and that `common/framebuffer.py` exists while `common/display.py` does not.
+
+**Zero 2 W is 2.4GHz-only.** It has no 5GHz radio. If the SSID isn't broadcasting 2.4GHz, the unit silently never appears on the network.
+
+**Reimaged?** `ssh-keygen -R druid-expo.local` — new host keys.
+
+**Text too small?** The board scales from a 1080p baseline with a floor (`max(h/1080, 0.78)`). Raise the floor in `ExpoBoard.__init__` if the kitchen reads it from a distance.
+
+**Provision on bench WiFi**, not the truck's cellular router. The old Vue stack burned ~5GB of SIM data on `npm ci` across two buildouts. This one downloads ~20MB once and then uses a few KB per poll.
+
+---
+
+## Backend contract
+
+`GET /api/orders/active` → `OrderView[]`, header `X-API-Key`.
+
+```ts
+OrderView {
+  id: string
+  status: 'PAID' | 'IN_KITCHEN' | 'READY'
+  fulfillment: string
+  items: OrderItemView[]      // { name, quantity, modifiers? }
+  createdAt: string           // ISO-8601; drives the age timer
+}
+```
+
+Terminal states never appear in `/active`, so the board doesn't handle them.

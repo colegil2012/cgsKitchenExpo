@@ -37,11 +37,12 @@ def main():
         print(f"CONFIG ERROR: {p}", file=sys.stderr)
 
     hide_cursor()
-    fb = Framebuffer()
-    print(f"framebuffer: {fb.width}x{fb.height} @ {fb.bpp}bpp (stride {fb.stride})",
-          flush=True)
+    fb = Framebuffer(rotate=cfg.rotate)
+    cw, ch = fb.canvas_size
+    print(f"framebuffer: {fb.width}x{fb.height} @ {fb.bpp}bpp "
+          f"(stride {fb.stride}) rotate={fb.rotate} canvas={cw}x{ch}", flush=True)
 
-    board = ExpoBoard((fb.width, fb.height))
+    board = ExpoBoard((cw, ch))
     poller = ApiPoller(cfg)
     poller.start()
 

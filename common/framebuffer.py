@@ -8,11 +8,14 @@ so *no* SDL backend can reach the screen. Chromium died on the same GPU wall.
 
 The framebuffer cannot hit that wall: we mmap the kernel's framebuffer and
 write bytes into it. The display controller scans those bytes out. There is
-no GPU, no context, no driver negotiation. It is the oldest and dumbest way
-to put pixels on a screen, and for a text board it is exactly right.
+no GPU, no context, no driver negotiation.
 
-Reads geometry from sysfs rather than assuming, then converts Pillow's
-RGB888 image to the panel's native format (RGB565 on this hardware).
+ROTATION (menu board, portrait TV):
+Because we render to a PIL image before blitting, rotation is free — no
+kernel flags, no display-driver config. Set ROTATE=90 (or 270) in
+/etc/celtech/env. The board is asked to draw at the *rotated* canvas size
+(e.g. 768x1366 portrait) and the finished image is rotated to fit the panel's
+native landscape framebuffer. Physically turn the TV 90 degrees to match.
 """
 import mmap
 import os
@@ -20,8 +23,13 @@ import numpy as np
 
 
 class Framebuffer:
-    def __init__(self, device="/dev/fb0"):
+    def __init__(self, device="/dev/fb0", rotate=0):
         self.device = device
+        self.rotate = int(rotate) % 360
+        if self.rotate not in (0, 90, 180, 270):
+            raise ValueError("ROTATE must be 0, 90, 180 or 270")
+
+        # Native panel geometry (always the physical framebuffer).
         self.width, self.height = self._read_size()
         self.bpp = self._read_int("bits_per_pixel", 16)
         self.stride = self._read_int("stride", self.width * self.bpp // 8)
@@ -34,14 +42,24 @@ class Framebuffer:
 
         self._fd = os.open(self.device, os.O_RDWR)
         self._size = self.stride * self.height
-        self._mm = mmap.mmap(self._fd, self._size,
-                             mmap.MAP_SHARED,
+        self._mm = mmap.mmap(self._fd, self._size, mmap.MAP_SHARED,
                              mmap.PROT_READ | mmap.PROT_WRITE)
 
-    # ---- sysfs geometry -----------------------------------------------
+    # ---- what size should the BOARD draw at? ---------------------------
+    @property
+    def canvas_size(self):
+        """The size the renderer should draw at.
+
+        At 90/270 this is the panel's dimensions SWAPPED — the board draws a
+        tall portrait image, which we then rotate onto the landscape panel.
+        """
+        if self.rotate in (90, 270):
+            return (self.height, self.width)      # e.g. 768 x 1366 portrait
+        return (self.width, self.height)
+
+    # ---- sysfs geometry -------------------------------------------------
     def _sysfs(self, name):
-        node = os.path.basename(self.device)          # fb0
-        return f"/sys/class/graphics/{node}/{name}"
+        return f"/sys/class/graphics/{os.path.basename(self.device)}/{name}"
 
     def _read_size(self):
         try:
@@ -58,18 +76,21 @@ class Framebuffer:
         except Exception:
             return default
 
-    # ---- blit ----------------------------------------------------------
+    # ---- blit -----------------------------------------------------------
     def show(self, pil_image):
-        """Push a Pillow RGB image to the panel."""
+        """Push a Pillow RGB image to the panel, rotating if configured."""
+        if self.rotate:
+            # expand=True so a 768x1366 portrait becomes 1366x768 landscape
+            pil_image = pil_image.rotate(self.rotate, expand=True)
+
         if pil_image.size != (self.width, self.height):
             pil_image = pil_image.resize((self.width, self.height))
         if pil_image.mode != "RGB":
             pil_image = pil_image.convert("RGB")
 
-        arr = np.asarray(pil_image, dtype=np.uint8)          # H x W x 3
+        arr = np.asarray(pil_image, dtype=np.uint8)
 
         if self.bpp == 16:
-            # RGB888 -> RGB565: r>>3 <<11 | g>>2 <<5 | b>>3
             r = arr[:, :, 0].astype(np.uint16)
             g = arr[:, :, 1].astype(np.uint16)
             b = arr[:, :, 2].astype(np.uint16)
@@ -77,7 +98,6 @@ class Framebuffer:
             raw = packed.astype("<u2").tobytes()
             row_bytes = self.width * 2
         else:
-            # 32bpp: kernel expects BGRA/XRGB little-endian
             bgra = np.dstack([
                 arr[:, :, 2], arr[:, :, 1], arr[:, :, 0],
                 np.full(arr.shape[:2], 255, dtype=np.uint8),
@@ -85,7 +105,6 @@ class Framebuffer:
             raw = bgra.tobytes()
             row_bytes = self.width * 4
 
-        # Respect stride: the panel's rows may be padded wider than the image.
         if row_bytes == self.stride:
             self._mm.seek(0)
             self._mm.write(raw)
@@ -108,9 +127,8 @@ class Framebuffer:
 
 
 def hide_cursor():
-    """Stop the console text cursor blinking over the board."""
     try:
         with open("/sys/class/graphics/fbcon/cursor_blink", "w") as fh:
             fh.write("0")
     except Exception:
-        pass          # not fatal; the buildout also sets vt.global_cursor_default=0
+        pass

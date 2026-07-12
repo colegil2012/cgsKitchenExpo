@@ -79,9 +79,14 @@ def main():
     ap.add_argument("--watch", action="store_true", help="re-render continuously")
     ap.add_argument("--demo", action="store_true",
                     help="use fake data (no backend / no /etc/celtech/env needed)")
+    ap.add_argument("--rotate", type=int, default=0, choices=[0, 90, 180, 270],
+                    help="preview a rotated (portrait) board, as ROTATE in env")
     args = ap.parse_args()
 
     w, h = (int(v) for v in args.size.lower().split("x"))
+    # At 90/270 the board draws PORTRAIT (dims swapped), exactly as on the Pi.
+    if args.rotate in (90, 270):
+        w, h = h, w
 
     if args.role == "expo":
         from expo_board import ExpoBoard
@@ -124,6 +129,8 @@ def main():
                 time.sleep(3)
         else:
             img = frame()
+            if args.rotate:
+                img = img.rotate(args.rotate, expand=True)
             img.save(args.out)
             print(f"wrote {args.out} ({img.size[0]}x{img.size[1]})")
             if args.show:

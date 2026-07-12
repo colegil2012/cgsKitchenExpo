@@ -69,6 +69,17 @@ class Config:
 
         self.board_title = env.get("BOARD_TITLE", "Menu")
 
+        # Screen rotation, for a TV physically turned on its side.
+        # 0 = landscape (default), 90/270 = portrait, 180 = upside down.
+        # Handled entirely in software (we rotate the rendered image before
+        # blitting), so no kernel flags or display-driver config are needed.
+        try:
+            self.rotate = int(env.get("ROTATE", 0)) % 360
+        except ValueError:
+            self.rotate = 0
+        if self.rotate not in (0, 90, 180, 270):
+            self.rotate = 0
+
         # Heartbeat endpoint (unauthenticated) for the connectivity indicator.
         self.health_path = "/actuator/health"
 
