@@ -65,6 +65,8 @@ class ApiPoller:
         req = urllib.request.Request(url, method="GET")
         req.add_header("X-API-Key", self.cfg.api_key)
         req.add_header("Accept", "application/json")
+        req.add_header("User-Agent",
+                       "Druid-Expo-Display/1.0 (+https://celtechgs.kitchen)")
         # Generous timeout: cellular can be slow. The render loop is on another
         # thread, so a slow poll never freezes the screen.
         with urllib.request.urlopen(req, timeout=20, context=self._ssl_ctx) as resp:
