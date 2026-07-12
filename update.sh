@@ -21,8 +21,8 @@ if [ -z "$ROLE" ] && [ -f /etc/celtech/role ]; then
 fi
 
 case "$ROLE" in
-    expo) APP_DIR="/home/druid/cgsKitchenExpo"; SERVICE="druid-expo.service"; LABEL="Expo Board" ;;
-    menu) APP_DIR="/home/druid/cgsKitchenMenu"; SERVICE="druid-menu.service"; LABEL="Menu Board" ;;
+    expo) APP_DIR="/home/druid/cgsKitchenExpo"; SERVICE="cgs-expo.service"; LABEL="Expo Board" ;;
+    menu) APP_DIR="/home/druid/cgsKitchenMenu"; SERVICE="cgs-menu.service"; LABEL="Menu Board" ;;
     *)    echo "ERROR: role must be 'expo' or 'menu' (got '$ROLE')."; exit 1 ;;
 esac
 

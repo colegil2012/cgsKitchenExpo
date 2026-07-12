@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
 """
-main.py — Expo board entry point.
+main.py — Expo board entry point (framebuffer renderer).
 
-CPU discipline (the whole point of this rewrite):
-  - The API poll runs on a background thread, so network never blocks drawing.
-  - We redraw at ~2 FPS normally. Chromium was repainting continuously and
-    pegging the CPU; a kitchen board does not need 60 FPS.
-  - When a ticket is HOT we bump to ~12 FPS so the pulse animates smoothly,
-    then drop back. Nothing else animates.
+No pygame, no SDL, no EGL, no GPU. Renders with Pillow and writes the
+resulting image straight to /dev/fb0.
+
+CPU discipline: the API poll runs on a background thread, and we only
+re-render when there is a reason to. A full 1366x768 Pillow frame is cheap;
+we cap it at 2 FPS normally, 8 FPS while a ticket is pulsing red.
 """
 import sys
 import os
 import time
-import pygame
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "common"))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "common"))
 
-from config import Config              # noqa: E402
-from api import ApiPoller              # noqa: E402
-from display import init_display       # noqa: E402
+from config import Config                      # noqa: E402
+from api import ApiPoller                      # noqa: E402
+from framebuffer import Framebuffer, hide_cursor   # noqa: E402
 from expo_board import ExpoBoard, age_minutes, heat_for, COLUMNS   # noqa: E402
 
 
@@ -33,37 +33,29 @@ def any_hot(orders, now_ts):
 
 def main():
     cfg = Config(role="expo")
-    problems = cfg.validate()
-    if problems:
-        for p in problems:
-            print(f"CONFIG ERROR: {p}", file=sys.stderr)
+    for p in cfg.validate():
+        print(f"CONFIG ERROR: {p}", file=sys.stderr)
 
-    pygame.init()
-    surface, size = init_display()
-    board = ExpoBoard(surface, size)
+    hide_cursor()
+    fb = Framebuffer()
+    print(f"framebuffer: {fb.width}x{fb.height} @ {fb.bpp}bpp (stride {fb.stride})",
+          flush=True)
 
+    board = ExpoBoard((fb.width, fb.height))
     poller = ApiPoller(cfg)
     poller.start()
 
-    clock = pygame.time.Clock()
-    running = True
-    while running:
-        for ev in pygame.event.get():
-            if ev.type == pygame.QUIT:
-                running = False
-            elif ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
-                running = False
-
-        now = time.time()
-        orders = poller.data or []
-        board.draw(orders, poller.online, now)
-        pygame.display.flip()
-
-        # Only spend CPU on animation when something is actually pulsing.
-        clock.tick(12 if any_hot(orders, now) else 2)
-
-    poller.stop()
-    pygame.quit()
+    try:
+        while True:
+            now = time.time()
+            orders = poller.data or []
+            fb.show(board.render(orders, poller.online, now))
+            time.sleep(0.125 if any_hot(orders, now) else 0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        poller.stop()
+        fb.close()
 
 
 if __name__ == "__main__":

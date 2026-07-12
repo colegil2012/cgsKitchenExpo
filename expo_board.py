@@ -1,48 +1,50 @@
 """
-expo_board.py — native Expo (kitchen) board.
+expo_board.py — Expo (kitchen) board, rendered with Pillow.
 
-Faithful port of the Vue board's design:
+Same design as the Vue board (and the same rules ported from OrderTicket.vue /
+BoardColumn.vue) — only the drawing primitives changed from pygame to Pillow,
+because SDL cannot reach the screen on this hardware.
+
   columns  PAID -> IN_KITCHEN -> READY, oldest-first within each
-  ticket   #LAST4 + age, item lines (qty x name), modifiers indented beneath,
-           fulfillment footer
+  ticket   #LAST4 + age, item lines (qty x name), modifiers indented, footer
   heat     READY = cool always; else >=12min HOT (red, pulsing),
            >=6min WARM (amber), else FRESH (column accent)
-  colors   lifted from styles.css + BoardColumn.vue
 """
 import os
 import re
 import time
 import datetime
-import pygame
+from PIL import Image, ImageDraw, ImageFont
 
-# ---- palette (from styles.css / BoardColumn.vue) -----------------------
-BG          = (0x0e, 0x25, 0x0e)   # --bg
-CARD        = (0x16, 0x1b, 0x25)   # --card
-INK         = (0xf4, 0xf6, 0xfb)   # --ink
-INK_DIM     = (0x8b, 0x93, 0xa7)   # --ink-dim
-BRAND       = (0xe6, 0xac, 0x00)   # --accent-brand
+# ---- palette (styles.css / BoardColumn.vue) ---------------------------
+BG       = (0x0e, 0x25, 0x0e)
+CARD     = (0x16, 0x1b, 0x25)
+INK      = (0xf4, 0xf6, 0xfb)
+INK_DIM  = (0x8b, 0x93, 0xa7)
+BRAND    = (0xe6, 0xac, 0x00)
+EMPTY    = (40, 48, 40)
 
 COL_ACCENT = {
-    "PAID":       ((0x3b, 0x82, 0xf6), (0x93, 0xc5, 0xfd)),   # accent, accent-text
+    "PAID":       ((0x3b, 0x82, 0xf6), (0x93, 0xc5, 0xfd)),
     "IN_KITCHEN": ((0xf5, 0xa6, 0x23), (0xfc, 0xd3, 0x4d)),
     "READY":      ((0x22, 0xc5, 0x5e), (0x86, 0xef, 0xac)),
 }
 HEAT_WARM = (0xf5, 0xa6, 0x23)
 HEAT_HOT  = (0xff, 0x3b, 0x30)
 HOT_AGE   = (0xff, 0x5a, 0x4f)
+LIVE      = (0x22, 0xc5, 0x5e)
+DEAD      = (0xff, 0x3b, 0x30)
 
 COLUMNS = ["PAID", "IN_KITCHEN", "READY"]
-COLUMN_LABEL = {"PAID": "Paid", "IN_KITCHEN": "In Kitchen", "READY": "Ready"}
+COLUMN_LABEL = {"PAID": "PAID", "IN_KITCHEN": "IN KITCHEN", "READY": "READY"}
 
 FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
-
-# ---- modifier / name normalization (ported from OrderTicket.vue) -------
 _PAREN = re.compile(r"^(.*?)\s*\(([^()]*)\)\s*$")
 
 
+# ---- rules ported from OrderTicket.vue --------------------------------
 def split_name(raw):
-    """['Clean Name', 'paren contents'|None] — legacy flattened POS names."""
     s = (raw or "").strip()
     m = _PAREN.match(s)
     if m:
@@ -61,7 +63,6 @@ def _mod_label(entry):
 
 
 def mod_list(item):
-    """Structured array -> legacy comma string -> name parenthetical fallback."""
     raw = item.get("modifiers")
     if isinstance(raw, list):
         return [m for m in (_mod_label(e) for e in raw) if m]
@@ -76,7 +77,6 @@ def age_minutes(order, now_ts):
     if not created:
         return 0
     try:
-        # Backend sends ISO-8601; tolerate a trailing Z.
         dt = datetime.datetime.fromisoformat(str(created).replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=datetime.timezone.utc)
@@ -96,161 +96,148 @@ def heat_for(column, age_min):
 
 
 class ExpoBoard:
-    def __init__(self, surface, size):
-        self.surface = surface
+    def __init__(self, size):
         self.w, self.h = size
-        s = self.h / 1080.0          # scale from the 1080p design baseline
-
-        def A(px):   # Archivo (display)
-            return pygame.font.Font(os.path.join(FONT_DIR, "Archivo.ttf"), max(10, int(px * s)))
-
-        def M(px, bold=False):   # Space Mono
-            name = "SpaceMono-Bold.ttf" if bold else "SpaceMono-Regular.ttf"
-            return pygame.font.Font(os.path.join(FONT_DIR, name), max(10, int(px * s)))
-
-        self.f_brand   = A(30)
-        self.f_coltitle = A(30)
-        self.f_colcount = M(24, bold=True)
-        self.f_ticketno = A(32)
-        self.f_age      = M(19)
-        self.f_line     = A(25)
-        self.f_qty      = M(23, bold=True)
-        self.f_mod      = A(17)
-        self.f_foot     = A(16)
-        self.f_empty    = A(34)
-        self.f_status   = A(17)
-
+        s = self.h / 1080.0
+        # On a 768p panel a straight 1080p scale makes kitchen text small;
+        # lift it so line cooks can read the board across the truck.
+        s = max(s, 0.78)
         self.s = s
-        self.pad = int(28 * s)
 
-    # ---- helpers ------------------------------------------------------
-    def _rrect(self, rect, color, radius=None):
-        pygame.draw.rect(self.surface, color, rect,
-                         border_radius=radius if radius is not None else int(14 * self.s))
+        def A(px):
+            return ImageFont.truetype(os.path.join(FONT_DIR, "Archivo.ttf"),
+                                      max(10, int(px * s)))
 
-    def _text(self, font, txt, color, x, y):
-        img = font.render(str(txt), True, color)
-        self.surface.blit(img, (x, y))
-        return img.get_width(), img.get_height()
+        def M(px, bold=False):
+            f = "SpaceMono-Bold.ttf" if bold else "SpaceMono-Regular.ttf"
+            return ImageFont.truetype(os.path.join(FONT_DIR, f),
+                                      max(10, int(px * s)))
 
-    # ---- ticket -------------------------------------------------------
-    def _ticket_height(self, order):
-        """Measure before drawing so columns can lay out without overflow."""
+        self.f_brand    = A(28)
+        self.f_coltitle = A(28)
+        self.f_colcount = M(22, bold=True)
+        self.f_ticketno = A(30)
+        self.f_age      = M(18)
+        self.f_line     = A(23)
+        self.f_qty      = M(21, bold=True)
+        self.f_mod      = A(16)
+        self.f_foot     = A(15)
+        self.f_empty    = A(30)
+        self.f_status   = A(15)
+
+        self.pad = int(22 * s)
+
+    # ---- text helpers --------------------------------------------------
+    def _tw(self, d, font, text):
+        return d.textbbox((0, 0), str(text), font=font)[2]
+
+    def _th(self, font):
+        a, desc = font.getmetrics()
+        return a + desc
+
+    def _ellipsize(self, d, font, text, max_w):
+        text = str(text)
+        if self._tw(d, font, text) <= max_w:
+            return text
+        while text and self._tw(d, font, text + "…") > max_w:
+            text = text[:-1]
+        return (text + "…") if text else ""
+
+    # ---- ticket --------------------------------------------------------
+    def _ticket_height(self, d, order):
         s = self.s
-        h = int(12 * s)                      # top pad
-        h += self.f_ticketno.get_height()    # head row
-        h += int(10 * s)
+        h = int(10 * s) + self._th(self.f_ticketno) + int(8 * s)
         for it in order.get("items") or []:
-            h += self.f_line.get_height() + int(3 * s)
+            h += self._th(self.f_line) + int(2 * s)
             for _ in mod_list(it):
-                h += self.f_mod.get_height() + int(1 * s)
-            h += int(6 * s)
+                h += self._th(self.f_mod) + int(1 * s)
+            h += int(5 * s)
         if order.get("fulfillment"):
-            h += int(8 * s) + self.f_foot.get_height()
-        h += int(12 * s)                     # bottom pad
-        return h
+            h += int(6 * s) + self._th(self.f_foot)
+        return h + int(10 * s)
 
-    def _draw_ticket(self, order, column, x, y, w, now_ts, pulse):
+    def _draw_ticket(self, d, order, column, x, y, w, now_ts, pulse):
         s = self.s
         age = age_minutes(order, now_ts)
         heat = heat_for(column, age)
         accent, accent_text = COL_ACCENT[column]
+        bar = {"warm": HEAT_WARM, "hot": HEAT_HOT}.get(heat, accent)
 
-        if heat == "warm":
-            bar = HEAT_WARM
-        elif heat == "hot":
-            bar = HEAT_HOT
-        else:
-            bar = accent
+        h = self._ticket_height(d, order)
+        r = int(10 * s)
 
-        h = self._ticket_height(order)
-        rect = pygame.Rect(int(x), int(y), int(w), int(h))
-
-        # Hot tickets pulse: a red glow ring that breathes (the CSS keyframe).
+        # hot tickets pulse: a red ring that breathes
         if heat == "hot":
-            glow = int(90 + 90 * pulse)
-            grect = rect.inflate(int(8 * s), int(8 * s))
-            gs = pygame.Surface((grect.w, grect.h), pygame.SRCALPHA)
-            pygame.draw.rect(gs, (*HEAT_HOT, glow), gs.get_rect(),
-                             border_radius=int(16 * s))
-            self.surface.blit(gs, grect.topleft)
+            k = int(2 + 3 * pulse)
+            d.rounded_rectangle([x - k, y - k, x + w + k, y + h + k],
+                                radius=r + k, outline=HEAT_HOT, width=max(1, int(2 * s)))
 
-        self._rrect(rect, CARD)
-        # left accent bar (8px in CSS)
-        bar_w = max(4, int(8 * s))
-        bar_rect = pygame.Rect(rect.x, rect.y, bar_w, rect.h)
-        pygame.draw.rect(self.surface, bar, bar_rect,
-                         border_top_left_radius=int(14 * s),
-                         border_bottom_left_radius=int(14 * s))
+        d.rounded_rectangle([x, y, x + w, y + h], radius=r, fill=CARD)
+        bw = max(4, int(7 * s))
+        d.rounded_rectangle([x, y, x + bw + r, y + h], radius=r, fill=bar)
+        d.rectangle([x + bw, y, x + bw + r, y + h], fill=CARD)
 
-        ix = rect.x + bar_w + int(14 * s)
-        iw = rect.w - (bar_w + int(28 * s))
-        cy = rect.y + int(12 * s)
+        ix = x + bw + int(12 * s)
+        iw = w - (bw + int(24 * s))
+        cy = y + int(10 * s)
 
-        # head: #LAST4  ....  12m
         tno = "#" + (str(order.get("id") or "????")[-4:]).upper()
-        self._text(self.f_ticketno, tno, INK, ix, cy)
-        age_col = HOT_AGE if heat == "hot" else INK_DIM
-        aimg = self.f_age.render(f"{age}m", True, age_col)
-        self.surface.blit(aimg, (rect.right - int(14 * s) - aimg.get_width(),
-                                 cy + int(8 * s)))
-        cy += self.f_ticketno.get_height() + int(10 * s)
+        d.text((ix, cy), tno, font=self.f_ticketno, fill=INK)
+        acol = HOT_AGE if heat == "hot" else INK_DIM
+        atxt = f"{age}m"
+        d.text((x + w - int(12 * s) - self._tw(d, self.f_age, atxt), cy + int(6 * s)),
+               atxt, font=self.f_age, fill=acol)
+        cy += self._th(self.f_ticketno) + int(8 * s)
 
-        # items
-        qty_w = int(self.f_qty.size("00x")[0])
+        qw = self._tw(d, self.f_qty, "00x") + int(8 * s)
         for it in order.get("items") or []:
-            q = f"{it.get('quantity', 1)}x"
-            self._text(self.f_qty, q, accent_text, ix, cy)
-            name = split_name(it.get("name"))[0]
-            name = self._ellipsize(self.f_line, name, iw - qty_w - int(8 * s))
-            self._text(self.f_line, name, INK, ix + qty_w + int(8 * s), cy)
-            cy += self.f_line.get_height() + int(3 * s)
+            d.text((ix, cy), f"{it.get('quantity', 1)}x",
+                   font=self.f_qty, fill=accent_text)
+            nm = self._ellipsize(d, self.f_line,
+                                 split_name(it.get("name"))[0], iw - qw)
+            d.text((ix + qw, cy), nm, font=self.f_line, fill=INK)
+            cy += self._th(self.f_line) + int(2 * s)
 
             for m in mod_list(it):
-                mx = ix + qty_w + int(8 * s)
-                pw, _ = self._text(self.f_mod, "+ ", accent_text, mx, cy)
-                mtxt = self._ellipsize(self.f_mod, m, iw - qty_w - int(20 * s) - pw)
-                self._text(self.f_mod, mtxt, INK_DIM, mx + pw, cy)
-                cy += self.f_mod.get_height() + int(1 * s)
-            cy += int(6 * s)
+                mx = ix + qw
+                d.text((mx, cy), "+", font=self.f_mod, fill=accent_text)
+                pw = self._tw(d, self.f_mod, "+ ")
+                mt = self._ellipsize(d, self.f_mod, m, iw - qw - pw - int(6 * s))
+                d.text((mx + pw, cy), mt, font=self.f_mod, fill=INK_DIM)
+                cy += self._th(self.f_mod) + int(1 * s)
+            cy += int(5 * s)
 
         if order.get("fulfillment"):
             cy += int(2 * s)
-            self._text(self.f_foot, str(order["fulfillment"]).upper(), INK_DIM, ix, cy)
-
+            d.text((ix, cy), str(order["fulfillment"]).upper(),
+                   font=self.f_foot, fill=INK_DIM)
         return h
 
-    def _ellipsize(self, font, text, max_w):
-        text = str(text)
-        if font.size(text)[0] <= max_w:
-            return text
-        while text and font.size(text + "…")[0] > max_w:
-            text = text[:-1]
-        return text + "…" if text else ""
-
-    # ---- full frame ---------------------------------------------------
-    def draw(self, orders, online, now_ts):
+    # ---- frame ---------------------------------------------------------
+    def render(self, orders, online, now_ts):
+        img = Image.new("RGB", (self.w, self.h), BG)
+        d = ImageDraw.Draw(img)
         s = self.s
-        self.surface.fill(BG)
 
-        # ---- top bar: brand | clock | status dot ----
-        bar_h = int(64 * s)
-        self._text(self.f_brand, "CGS KITCHEN", BRAND, self.pad, int(16 * s))
-
+        # top bar
+        d.text((self.pad, int(12 * s)), "CGS KITCHEN", font=self.f_brand, fill=BRAND)
         clock = time.strftime("%-I:%M %p", time.localtime(now_ts))
-        cimg = self.f_brand.render(clock, True, INK)
-        self.surface.blit(cimg, (self.w // 2 - cimg.get_width() // 2, int(16 * s)))
+        d.text((self.w // 2 - self._tw(d, self.f_brand, clock) // 2, int(12 * s)),
+               clock, font=self.f_brand, fill=INK)
 
-        dot_col = (0x22, 0xc5, 0x5e) if online else (0xff, 0x3b, 0x30)
-        label = "LIVE" if online else "RECONNECTING"
-        limg = self.f_status.render(label, True, INK_DIM)
-        lx = self.w - self.pad - limg.get_width()
-        self.surface.blit(limg, (lx, int(24 * s)))
-        pygame.draw.circle(self.surface, dot_col,
-                           (lx - int(16 * s), int(24 * s) + limg.get_height() // 2),
-                           max(4, int(7 * s)))
+        lbl = "LIVE" if online else "RECONNECTING"
+        lw = self._tw(d, self.f_status, lbl)
+        lx = self.w - self.pad - lw
+        ly = int(18 * s)
+        d.text((lx, ly), lbl, font=self.f_status, fill=INK_DIM)
+        rr = max(3, int(5 * s))
+        ccy = ly + self._th(self.f_status) // 2
+        d.ellipse([lx - int(14 * s) - rr, ccy - rr, lx - int(14 * s) + rr, ccy + rr],
+                  fill=(LIVE if online else DEAD))
 
-        # ---- group orders by column, oldest first ----
+        bar_h = int(12 * s) + self._th(self.f_brand) + int(14 * s)
+
+        # bucket + sort
         buckets = {c: [] for c in COLUMNS}
         for o in orders or []:
             st = str(o.get("status") or "").upper()
@@ -259,43 +246,42 @@ class ExpoBoard:
         for c in COLUMNS:
             buckets[c].sort(key=lambda o: str(o.get("createdAt") or ""))
 
-        # pulse phase for hot tickets (1.6s cycle, like the CSS animation)
-        pulse = 0.5 * (1 + pygame.math.Vector2(1, 0).rotate(
-            (now_ts % 1.6) / 1.6 * 360).x)
+        # pulse phase (~1.6s cycle)
+        import math
+        pulse = 0.5 * (1 + math.sin((now_ts % 1.6) / 1.6 * 2 * math.pi))
 
-        # ---- three columns ----
-        gap = int(20 * s)
+        gap = int(14 * s)
         col_w = (self.w - self.pad * 2 - gap * 2) // 3
-        top = bar_h + int(16 * s)
+        top = bar_h
 
         for i, c in enumerate(COLUMNS):
             cx = self.pad + i * (col_w + gap)
             accent, accent_text = COL_ACCENT[c]
 
-            # column head + 4px underline
-            self._text(self.f_coltitle, COLUMN_LABEL[c].upper(), INK, cx, top)
+            d.text((cx, top), COLUMN_LABEL[c], font=self.f_coltitle, fill=INK)
             cnt = str(len(buckets[c]))
-            cimg2 = self.f_colcount.render(cnt, True, accent_text)
-            self.surface.blit(cimg2, (cx + col_w - cimg2.get_width() - int(8 * s),
-                                      top + int(4 * s)))
-            uy = top + self.f_coltitle.get_height() + int(8 * s)
-            pygame.draw.rect(self.surface, accent,
-                             pygame.Rect(cx, uy, col_w, max(2, int(4 * s))))
+            d.text((cx + col_w - self._tw(d, self.f_colcount, cnt), top + int(4 * s)),
+                   cnt, font=self.f_colcount, fill=accent_text)
+            uy = top + self._th(self.f_coltitle) + int(6 * s)
+            d.rectangle([cx, uy, cx + col_w, uy + max(2, int(3 * s))], fill=accent)
 
-            # tickets
-            ty = uy + int(16 * s)
-            limit = self.h - int(20 * s)
+            ty = uy + int(14 * s)
+            limit = self.h - int(12 * s)
+
             if not buckets[c]:
-                eimg = self.f_empty.render("—", True, (40, 48, 40))
-                self.surface.blit(eimg, (cx + col_w // 2 - eimg.get_width() // 2,
-                                         ty + int(30 * s)))
+                em = "—"
+                d.text((cx + col_w // 2 - self._tw(d, self.f_empty, em) // 2,
+                        ty + int(24 * s)), em, font=self.f_empty, fill=EMPTY)
                 continue
-            for o in buckets[c]:
-                th = self._ticket_height(o)
+
+            for idx, o in enumerate(buckets[c]):
+                th = self._ticket_height(d, o)
                 if ty + th > limit:
-                    more = len(buckets[c]) - buckets[c].index(o)
-                    self._text(self.f_foot, f"+{more} more", INK_DIM,
-                               cx + int(4 * s), ty + int(4 * s))
+                    more = len(buckets[c]) - idx
+                    d.text((cx + int(4 * s), ty + int(2 * s)), f"+{more} more",
+                           font=self.f_foot, fill=INK_DIM)
                     break
-                self._draw_ticket(o, c, cx, ty, col_w, now_ts, pulse)
-                ty += th + int(12 * s)
+                self._draw_ticket(d, o, c, cx, ty, col_w, now_ts, pulse)
+                ty += th + int(10 * s)
+
+        return img
