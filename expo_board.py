@@ -42,6 +42,8 @@ FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
 _PAREN = re.compile(r"^(.*?)\s*\(([^()]*)\)\s*$")
 
+ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+LOGO_PATH = os.path.join(ASSET_DIR, "logo.png")
 
 # ---- rules ported from OrderTicket.vue --------------------------------
 def split_name(raw):
@@ -126,6 +128,15 @@ class ExpoBoard:
         self.f_status   = A(15)
 
         self.pad = int(22 * s)
+
+        self.logo = None
+        if os.path.exists(LOGO_PATH):
+            logo = Image.open(LOGO_PATH).convert("RGBA")
+            target_h = int(36 * s)
+            ratio = target_h / logo.height
+            self.logo = logo.resize(
+                (max(1, int(logo.width * ratio)), target_h), Image.LANCZOS)
+
 
     # ---- text helpers --------------------------------------------------
     def _tw(self, d, font, text):
@@ -220,7 +231,12 @@ class ExpoBoard:
         s = self.s
 
         # top bar
-        d.text((self.pad, int(12 * s)), "CGS KITCHEN", font=self.f_brand, fill=BRAND)
+        bx, by = self.pad, int(12 * s)
+        if self.logo:
+            # RGBA paste needs the alpha channel as the mask
+            img.paste(self.logo, (bx, by), self.logo)
+            bx += self.logo.width + int(10 * s)
+        d.text((bx, by), "Expo", font=self.f_brand, fill=BRAND)
         clock = time.strftime("%-I:%M %p", time.localtime(now_ts))
         d.text((self.w // 2 - self._tw(d, self.f_brand, clock) // 2, int(12 * s)),
                clock, font=self.f_brand, fill=INK)
