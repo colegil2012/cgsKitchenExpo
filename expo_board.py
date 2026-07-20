@@ -235,7 +235,7 @@ class ExpoBoard:
         if self.logo:
             # RGBA paste needs the alpha channel as the mask
             img.paste(self.logo, (bx, by), self.logo)
-            bx += self.logo.width + int(10 * s)
+            bx += self.logo.width + int(8 * s)
         d.text((bx, by), "Expo", font=self.f_brand, fill=BRAND)
         clock = time.strftime("%-I:%M %p", time.localtime(now_ts))
         d.text((self.w // 2 - self._tw(d, self.f_brand, clock) // 2, int(12 * s)),
